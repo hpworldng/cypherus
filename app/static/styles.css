@@ -8,17 +8,33 @@ body {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  background: #0b0f19;
+  background: linear-gradient(180deg, #0b1020 0%, #0a1228 100%);
   color: #ebefff;
 }
 
 .card {
-  width: min(640px, 92vw);
+  width: min(700px, 92vw);
   border: 1px solid #283147;
   border-radius: 16px;
-  padding: 20px;
+  padding: 24px;
   background: #121a2a;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+}
+
+header h1 {
+  margin: 0 0 8px 0;
+}
+
+.notice {
+  border: 1px solid #2a3552;
+  border-radius: 10px;
+  background: #0d1424;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+.notice p {
+  margin: 6px 0;
 }
 
 label {
@@ -45,7 +61,11 @@ button {
   cursor: pointer;
   color: #041022;
   background: #75a2ff;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+button:hover {
+  opacity: 0.95;
 }
 
 .hidden {
@@ -56,12 +76,35 @@ button {
   color: #9db0d9;
 }
 
+.loading {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #c6d5f7;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid #4563a1;
+  border-top-color: #8eb2ff;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 pre {
   margin-top: 16px;
   border-radius: 8px;
   border: 1px solid #2a3552;
   padding: 12px;
   background: #0c1220;
-  max-height: 220px;
+  max-height: 240px;
   overflow: auto;
 }

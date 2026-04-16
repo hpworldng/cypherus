@@ -2,23 +2,33 @@ const authForm = document.getElementById("authForm");
 const codeForm = document.getElementById("codeForm");
 const passwordForm = document.getElementById("passwordForm");
 const logBox = document.getElementById("log");
+const loadingBox = document.getElementById("loading");
 
 let phoneRef = "";
 
+function setLoading(isLoading) {
+  loadingBox.classList.toggle("hidden", !isLoading);
+}
+
 function log(message, data = null) {
   const line = data ? `${message}\n${JSON.stringify(data, null, 2)}` : message;
-  logBox.textContent = `${line}\n\n${logBox.textContent}`;
+  logBox.textContent = `${new Date().toLocaleTimeString()}  ${line}\n\n${logBox.textContent}`;
 }
 
 async function postJson(path, payload) {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || "Request failed");
-  return data;
+  setLoading(true);
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Request failed");
+    return data;
+  } finally {
+    setLoading(false);
+  }
 }
 
 authForm.addEventListener("submit", async (event) => {

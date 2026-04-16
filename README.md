@@ -1,18 +1,18 @@
-# Cypherus Userbot Foundation (Lightweight)
+# Cypherus Userbot (Lightweight + Free Endpoints)
 
-This is now a **lightweight** build.
+This build is made to stay lightweight and avoid paid API keys.
 
-## What changed
-- Removed FastAPI + Pydantic + Uvicorn stack.
-- Switched to **Flask + Telethon** only.
-- No static API key.
-- Fewer dependencies, easier install on Termux.
+## ✅ What you now get
+- Flask + Telethon only (small dependency set).
+- Public auth endpoints (no static API key).
+- Formal frontend with loading state.
+- Stores API ID/API Hash/phone mapping in local files for future linking.
+- Enforces account cap per API ID+Hash (default: 4 accounts).
+- Big command menu with working core/automation/privacy utilities and placeholders for heavy modules.
 
 ---
 
-## Super simple install (Termux)
-
-Run these exactly:
+## Install (Termux)
 
 ```bash
 pkg update -y && pkg upgrade -y
@@ -28,19 +28,39 @@ pip install --upgrade pip setuptools wheel
 pip install -e .
 ```
 
-Start app:
+Run:
 
 ```bash
 python app/main.py
 ```
 
-Open in browser:
+Open:
 - `http://127.0.0.1:3000`
 
 ---
 
-## API endpoints (public)
+## Railway deploy
 
+### Do I still need `.env`?
+For Railway, set environment variables in Railway dashboard (Variables tab).
+You usually do **not** upload a `.env` file there.
+
+A `.env.example` is included so you can see what to set.
+
+### Variables to set
+- `PUBLIC_BASE_URL` = your Railway URL (example: `https://your-app.up.railway.app`)
+- `SESSION_DIR` = `sessions` (or persistent volume path)
+- `DATA_DIR` = `data` (or persistent volume path)
+- `MAX_ACCOUNTS_PER_API` = `4`
+
+### Start command
+```bash
+python app/main.py
+```
+
+---
+
+## API endpoints (public)
 - `POST /api/v1/auth/start`
 - `POST /api/v1/auth/verify-code`
 - `POST /api/v1/auth/verify-password`
@@ -48,33 +68,38 @@ Open in browser:
 
 ---
 
-## Railway deploy
-
-### Env vars
-- `PORT` (Railway auto-sets this)
-- `PUBLIC_BASE_URL` (optional)
-- `SESSION_DIR` (optional, default `sessions`)
-
-### Start command
-
-```bash
-python app/main.py
-```
+## Files created automatically
+- `data/account_map.json` (API+Hash -> linked phones)
+- `data/credentials.log` (API ID, API Hash, phone log)
+- `sessions/` (Telethon sessions)
 
 ---
 
-## Quick usage
+## Free endpoint notes (no paid API keys)
+- `.gpt` / `.ask` / `.ggsearch`: uses free DuckDuckGo instant answer endpoint.
+- `.qr`: uses free QR server URL.
+- `.short`: uses TinyURL free API.
+- `.jokes`: uses free official-joke-api.
 
-1. Open the web page.
-2. Enter Telegram `API ID`, `API Hash`, and phone number.
-3. Enter login code.
-4. If prompted, enter 2FA password.
-5. In Telegram, test:
-   - `.ping`
-   - `.autoreply on I am busy now`
-   - `.autoreply off`
+Some heavy commands are present as placeholders and can be expanded in next update.
 
 ---
 
-## Note
-Use this only on accounts you own or have permission to automate.
+## Command examples
+- `.menu`
+- `.help ping`
+- `.ping`
+- `.away I am away right now`
+- `.away off`
+- `.filter hello Hi there!`
+- `.schedule 10m Drink water`
+- `.anti-delete on`
+- `.anti-edit on`
+- `.gpt what is recursion`
+- `.calc 25*8+12`
+- `.short https://example.com`
+
+---
+
+## Legal note
+Use only on accounts you own or where you have explicit permission.

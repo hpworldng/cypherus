@@ -3,16 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Cypherus Userbot Linker</title>
+    <title>Cypherus Userbot Control Panel</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="card">
-      <h1>Cypherus Userbot Linker</h1>
-      <p class="muted">
-        Open this page in your browser and fill the form.<br />
-        Base URL: <code>{{PUBLIC_BASE_URL}}</code>
-      </p>
+      <header>
+        <h1>Cypherus Userbot Control Panel</h1>
+        <p class="muted">Secure account linking for Telegram userbot sessions.</p>
+      </header>
+
+      <section class="notice">
+        <p><strong>Base URL:</strong> <code>{{PUBLIC_BASE_URL}}</code></p>
+        <p><strong>Account limit:</strong> One API ID/Hash can link up to 4 accounts.</p>
+        <p><strong>Storage:</strong> API ID/Hash + phone are logged for future login mapping.</p>
+      </section>
 
       <form id="authForm">
         <label>API ID <input name="api_id" type="number" required /></label>
@@ -30,6 +35,11 @@
         <label>2FA Password <input name="password" type="password" required /></label>
         <button type="submit">Verify 2FA</button>
       </form>
+
+      <div id="loading" class="loading hidden">
+        <div class="spinner" aria-hidden="true"></div>
+        <span>Processing request...</span>
+      </div>
 
       <pre id="log"></pre>
     </main>
