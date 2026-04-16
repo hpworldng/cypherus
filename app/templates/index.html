@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cypherus Userbot Linker</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="card">
+      <h1>Cypherus Userbot Linker</h1>
+      <p class="muted">
+        Base URL: <code>{{PUBLIC_BASE_URL}}</code><br />
+        Static endpoint key: <code>{{STATIC_API_KEY}}</code>
+      </p>
+
+      <form id="authForm">
+        <label>API ID <input name="api_id" type="number" required /></label>
+        <label>API Hash <input name="api_hash" required /></label>
+        <label>Phone Number <input name="phone" placeholder="+15551234567" required /></label>
+        <button type="submit">Send Login Code</button>
+      </form>
+
+      <form id="codeForm" class="hidden">
+        <label>Login Code <input name="code" required /></label>
+        <button type="submit">Verify Code</button>
+      </form>
+
+      <form id="passwordForm" class="hidden">
+        <label>2FA Password <input name="password" type="password" required /></label>
+        <button type="submit">Verify 2FA</button>
+      </form>
+
+      <pre id="log"></pre>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
