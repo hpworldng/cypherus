@@ -1,114 +1,80 @@
-# Cypherus Userbot Foundation
+# Cypherus Userbot Foundation (Lightweight)
 
-This project runs a Telegram **userbot** with:
-- a backend server (Python + FastAPI)
-- a simple web page for login/linking
-- starter commands: `.ping`, `.autoreply on`, `.autoreply off`
+This is now a **lightweight** build.
+
+## What changed
+- Removed FastAPI + Pydantic + Uvicorn stack.
+- Switched to **Flask + Telethon** only.
+- No static API key.
+- Fewer dependencies, easier install on Termux.
 
 ---
 
-## Very simple setup (Termux)
+## Super simple install (Termux)
 
-> If you are not technical, copy and run commands exactly one-by-one.
-
-### 1) Install packages in Termux
+Run these exactly:
 
 ```bash
 pkg update -y && pkg upgrade -y
-pkg install -y python git libcrypt rust
-```
+pkg install -y python git
 
-### 2) Clone project
-
-```bash
 git clone https://github.com/hpworldng/cypherus.git
 cd cypherus
-```
 
-### 3) Create and activate virtual environment
-
-```bash
 python -m venv .venv
 source .venv/bin/activate
-```
 
-### 4) Upgrade pip tools
-
-```bash
 pip install --upgrade pip setuptools wheel
-```
-
-### 5) Install project dependencies
-
-```bash
 pip install -e .
 ```
 
-### 6) Start server
+Start app:
 
 ```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 3000
+python app/main.py
 ```
 
-### 7) Open in browser
-
-- On same phone: `http://127.0.0.1:3000`
-- If exposing to internet, use your host URL instead.
+Open in browser:
+- `http://127.0.0.1:3000`
 
 ---
 
-## Important: no static API key
+## API endpoints (public)
 
-This version is **public endpoint style**.
-
-Auth endpoints are:
 - `POST /api/v1/auth/start`
 - `POST /api/v1/auth/verify-code`
 - `POST /api/v1/auth/verify-password`
-
-No `STATIC_API_KEY` is required.
+- `GET /health`
 
 ---
 
-## Railway deploy (simple)
+## Railway deploy
 
-### Environment variables
-- `PORT` (Railway usually sets this automatically)
-- `PUBLIC_BASE_URL` (your Railway domain, optional)
+### Env vars
+- `PORT` (Railway auto-sets this)
+- `PUBLIC_BASE_URL` (optional)
 - `SESSION_DIR` (optional, default `sessions`)
 
 ### Start command
 
 ```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+python app/main.py
 ```
 
 ---
 
-## Troubleshooting
+## Quick usage
 
-### Error: `No command uvicorn found`
-Use:
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 3000
-```
-
-### Error building dependencies on Termux
-Install Rust first:
-
-```bash
-pkg install -y rust
-```
-
-Then run again:
-
-```bash
-pip install -e .
-```
+1. Open the web page.
+2. Enter Telegram `API ID`, `API Hash`, and phone number.
+3. Enter login code.
+4. If prompted, enter 2FA password.
+5. In Telegram, test:
+   - `.ping`
+   - `.autoreply on I am busy now`
+   - `.autoreply off`
 
 ---
 
-## Notes
-
-Use this only on accounts you own or where you have explicit permission.
+## Note
+Use this only on accounts you own or have permission to automate.

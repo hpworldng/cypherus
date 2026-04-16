@@ -1,12 +1,11 @@
 import asyncio
+import atexit
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from flask import Flask, jsonify, request, send_from_directory
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
 
@@ -18,8 +17,7 @@ SESSION_DIR = os.getenv("SESSION_DIR", "sessions")
 
 os.makedirs(SESSION_DIR, exist_ok=True)
 
-app = FastAPI(title="Cypherus Userbot")
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app = Flask(__name__, static_folder="static", template_folder="templates")
 
 
 @dataclass
@@ -34,25 +32,25 @@ pending_clients: dict[str, TelegramClient] = {}
 active_bots: dict[str, UserbotState] = {}
 
 
-class StartAuthRequest(BaseModel):
-    api_id: int = Field(..., ge=1)
-    api_hash: str
-    phone: str
-
-
-class VerifyCodeRequest(BaseModel):
-    phone: str
-    code: str
-
-
-class VerifyPasswordRequest(BaseModel):
-    phone: str
-    password: str
-
-
 def session_path(phone: str) -> str:
     safe_phone = phone.replace("+", "")
     return os.path.join(SESSION_DIR, safe_phone)
+
+
+bot_loop = asyncio.new_event_loop()
+
+
+def _loop_worker() -> None:
+    asyncio.set_event_loop(bot_loop)
+    bot_loop.run_forever()
+
+
+threading.Thread(target=_loop_worker, daemon=True).start()
+
+
+def run_async(coro: Any) -> Any:
+    future = asyncio.run_coroutine_threadsafe(coro, bot_loop)
+    return future.result()
 
 
 async def start_userbot(client: TelegramClient, phone: str) -> None:
@@ -71,9 +69,7 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
         state.auto_reply_enabled = True
         if reply_text:
             state.auto_reply_text = reply_text
-        await event.respond(
-            f"✅ Auto-reply enabled. Message: {state.auto_reply_text}"
-        )
+        await event.respond(f"✅ Auto-reply enabled. Message: {state.auto_reply_text}")
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.autoreply off$"))
     async def autoreply_off(event: events.NewMessage.Event) -> None:
@@ -90,79 +86,116 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
     active_bots[phone] = state
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
-    html = (open("app/templates/index.html", "r", encoding="utf-8")).read()
-    html = html.replace("{{PUBLIC_BASE_URL}}", PUBLIC_BASE_URL)
-    return HTMLResponse(html)
+@app.get("/")
+def index() -> str:
+    with open("app/templates/index.html", "r", encoding="utf-8") as f:
+        html = f.read()
+    return html.replace("{{PUBLIC_BASE_URL}}", PUBLIC_BASE_URL)
+
+
+@app.get("/static/<path:path>")
+def static_files(path: str) -> Any:
+    return send_from_directory("app/static", path)
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "public_base_url": PUBLIC_BASE_URL,
-        "active_sessions": len(active_bots),
-    }
+def health() -> Any:
+    return jsonify(
+        {
+            "status": "ok",
+            "public_base_url": PUBLIC_BASE_URL,
+            "active_sessions": len(active_bots),
+        }
+    )
 
 
 @app.post("/api/v1/auth/start")
-async def auth_start(payload: StartAuthRequest) -> dict[str, Any]:
-    phone = payload.phone.strip()
-    client = TelegramClient(session_path(phone), payload.api_id, payload.api_hash)
-    await client.connect()
+def auth_start() -> Any:
+    payload = request.get_json(silent=True) or {}
+    try:
+        api_id = int(payload.get("api_id", 0))
+    except (TypeError, ValueError):
+        return jsonify({"detail": "api_id must be a number"}), 400
+
+    api_hash = str(payload.get("api_hash", "")).strip()
+    phone = str(payload.get("phone", "")).strip()
+
+    if api_id < 1 or not api_hash or not phone:
+        return jsonify({"detail": "api_id, api_hash, and phone are required"}), 400
+
+    client = TelegramClient(session_path(phone), api_id, api_hash)
+    run_async(client.connect())
 
     try:
-        result = await client.send_code_request(phone)
+        result = run_async(client.send_code_request(phone))
     except Exception as exc:
-        await client.disconnect()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        run_async(client.disconnect())
+        return jsonify({"detail": str(exc)}), 400
 
     pending_clients[phone] = client
-    return {
-        "status": "code_sent",
-        "phone": phone,
-        "phone_code_hash": result.phone_code_hash,
-    }
+    return jsonify(
+        {
+            "status": "code_sent",
+            "phone": phone,
+            "phone_code_hash": result.phone_code_hash,
+        }
+    )
 
 
 @app.post("/api/v1/auth/verify-code")
-async def auth_verify_code(payload: VerifyCodeRequest) -> dict[str, Any]:
-    phone = payload.phone.strip()
+def auth_verify_code() -> Any:
+    payload = request.get_json(silent=True) or {}
+    phone = str(payload.get("phone", "")).strip()
+    code = str(payload.get("code", "")).strip()
+
     client = pending_clients.get(phone)
     if not client:
-        raise HTTPException(status_code=404, detail="No pending auth for this phone")
+        return jsonify({"detail": "No pending auth for this phone"}), 404
 
     try:
-        await client.sign_in(phone=phone, code=payload.code.strip())
-        await start_userbot(client, phone)
+        run_async(client.sign_in(phone=phone, code=code))
+        run_async(start_userbot(client, phone))
         pending_clients.pop(phone, None)
-        return {"status": "authorized", "phone": phone}
+        return jsonify({"status": "authorized", "phone": phone})
     except SessionPasswordNeededError:
-        return {"status": "2fa_required", "phone": phone}
+        return jsonify({"status": "2fa_required", "phone": phone})
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return jsonify({"detail": str(exc)}), 400
 
 
 @app.post("/api/v1/auth/verify-password")
-async def auth_verify_password(payload: VerifyPasswordRequest) -> dict[str, Any]:
-    phone = payload.phone.strip()
+def auth_verify_password() -> Any:
+    payload = request.get_json(silent=True) or {}
+    phone = str(payload.get("phone", "")).strip()
+    password = str(payload.get("password", ""))
+
     client = pending_clients.get(phone)
     if not client:
-        raise HTTPException(status_code=404, detail="No pending auth for this phone")
+        return jsonify({"detail": "No pending auth for this phone"}), 404
 
     try:
-        await client.sign_in(password=payload.password)
-        await start_userbot(client, phone)
+        run_async(client.sign_in(password=password))
+        run_async(start_userbot(client, phone))
         pending_clients.pop(phone, None)
-        return {"status": "authorized", "phone": phone}
+        return jsonify({"status": "authorized", "phone": phone})
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return jsonify({"detail": str(exc)}), 400
 
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    tasks = [state.client.disconnect() for state in active_bots.values()]
-    tasks.extend(client.disconnect() for client in pending_clients.values())
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+@atexit.register
+def shutdown() -> None:
+    for state in list(active_bots.values()):
+        try:
+            run_async(state.client.disconnect())
+        except Exception:
+            pass
+    for client in list(pending_clients.values()):
+        try:
+            run_async(client.disconnect())
+        except Exception:
+            pass
+    bot_loop.call_soon_threadsafe(bot_loop.stop)
+
+
+if __name__ == "__main__":
+    app.run(host=HOST, port=PORT)
