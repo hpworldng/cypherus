@@ -1,14 +1,12 @@
-# Cypherus Userbot (Lightweight + Free Endpoints)
+# Cypherus Userbot Dashboard (Lightweight)
 
-This build is made to stay lightweight and avoid paid API keys.
+This version now uses **account-first login flow**:
+1) Create dashboard account with API ID + API Hash.
+2) Login with same API ID + API Hash.
+3) Link up to 4 Telegram phones (devices) from dashboard.
+4) Manage/unlink linked devices from dashboard.
 
-## ✅ What you now get
-- Flask + Telethon only (small dependency set).
-- Public auth endpoints (no static API key).
-- Formal frontend with loading state.
-- Stores API ID/API Hash/phone mapping in local files for future linking.
-- Enforces account cap per API ID+Hash (default: 4 accounts).
-- Big command menu with working core/automation/privacy utilities and placeholders for heavy modules.
+It also restores previously linked active accounts on server restart.
 
 ---
 
@@ -34,72 +32,73 @@ Run:
 python app/main.py
 ```
 
-Open:
-- `http://127.0.0.1:3000`
+Open `http://127.0.0.1:3000`.
 
 ---
 
-## Railway deploy
+## Dashboard Flow
 
-### Do I still need `.env`?
-For Railway, set environment variables in Railway dashboard (Variables tab).
-You usually do **not** upload a `.env` file there.
-
-A `.env.example` is included so you can see what to set.
-
-### Variables to set
-- `PUBLIC_BASE_URL` = your Railway URL (example: `https://your-app.up.railway.app`)
-- `SESSION_DIR` = `sessions` (or persistent volume path)
-- `DATA_DIR` = `data` (or persistent volume path)
-- `MAX_ACCOUNTS_PER_API` = `4`
-
-### Start command
-```bash
-python app/main.py
-```
+- **Create account:** API ID + API Hash
+- **Login:** API ID + API Hash
+- **Link device:** phone -> code -> (optional) 2FA
+- **Manage devices:** see linked devices + unlink
 
 ---
 
-## API endpoints (public)
-- `POST /api/v1/auth/start`
-- `POST /api/v1/auth/verify-code`
-- `POST /api/v1/auth/verify-password`
+## API (new)
+
+### Account
+- `POST /api/v1/account/register`
+- `POST /api/v1/account/login`
+
+### Dashboard (requires `X-Auth-Token`)
+- `GET /api/v1/dashboard/me`
+- `POST /api/v1/dashboard/link/start`
+- `POST /api/v1/dashboard/link/verify-code`
+- `POST /api/v1/dashboard/link/verify-password`
+- `POST /api/v1/dashboard/unlink`
+
+### Health
 - `GET /health`
 
----
-
-## Files created automatically
-- `data/account_map.json` (API+Hash -> linked phones)
-- `data/credentials.log` (API ID, API Hash, phone log)
-- `sessions/` (Telethon sessions)
+Old `/api/v1/auth/*` endpoints are now compatibility responses (410).
 
 ---
 
-## Free endpoint notes (no paid API keys)
-- `.gpt` / `.ask` / `.ggsearch`: uses free DuckDuckGo instant answer endpoint.
-- `.qr`: uses free QR server URL.
-- `.short`: uses TinyURL free API.
-- `.jokes`: uses free official-joke-api.
+## Persistence / Restart behavior
 
-Some heavy commands are present as placeholders and can be expanded in next update.
+Saved data:
+- `data/dashboard_accounts.json`
+- `data/linked_devices.json`
+- `data/credentials.log`
+- `sessions/*`
 
----
-
-## Command examples
-- `.menu`
-- `.help ping`
-- `.ping`
-- `.away I am away right now`
-- `.away off`
-- `.filter hello Hi there!`
-- `.schedule 10m Drink water`
-- `.anti-delete on`
-- `.anti-edit on`
-- `.gpt what is recursion`
-- `.calc 25*8+12`
-- `.short https://example.com`
+On restart, app auto-loads linked devices and reconnects authorized sessions.
 
 ---
 
-## Legal note
-Use only on accounts you own or where you have explicit permission.
+## AI Endpoint (free)
+Used for `.gpt` and `.ask`:
+
+`https://devtoolbox-api.devtoolbox-api.workers.dev/ai/generate`
+
+Set custom endpoint with env var:
+- `AI_ENDPOINT=...`
+
+---
+
+## Environment variables
+See `.env.example`.
+For Railway: set these in Railway Variables tab.
+
+- `PUBLIC_BASE_URL`
+- `SESSION_DIR`
+- `DATA_DIR`
+- `MAX_ACCOUNTS_PER_API`
+- `AI_ENDPOINT`
+
+---
+
+## Notes
+- This is a lightweight base. Many heavy commands are wired and respond, and can be expanded module-by-module.
+- Use only with accounts you own or have explicit permission to automate.

